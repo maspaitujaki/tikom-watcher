@@ -1,0 +1,49 @@
+# Committed configuration. Secrets (TELEGRAM_BOT_TOKEN, DATABASE_URL,
+# ADMIN_CHAT_ID) live in .env, never here. Copy to config.yaml and edit.
+
+poll:
+  interval: 60s              # base time between full sweeps of the event list
+  jitter: 20s               # each sweep waits interval ± random(0..jitter)
+  confirm_delay: 5s         # on a SOLD_OUT->AVAILABLE flip, re-check once after this delay
+  cooldown_minutes: 30      # do not re-alert the same event within this window
+  unknown_streak_threshold: 5  # consecutive UNKNOWNs before DMing the admin a warning
+
+# Optional. Omit to poll 24/7.
+active_hours:
+  timezone: Asia/Jakarta
+  start: "08:00"
+  end: "23:59"
+
+# Consumed by the browser layer (Phase 4).
+browser:
+  timeout: 45s
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+# Detection rules proven by the Phase-0 spike. Per-event `detection:` may override.
+detection_defaults:
+  page_ready_selector: '[data-testid="product-card"]'   # purchase section; absent -> UNKNOWN
+  sold_out:
+    cta_selector: button          # scope to <button> (avoids the <span>"Habis" trap)
+    text_any: ["terjual habis", "habis", "sold out"]
+    require_disabled: true        # a disabled CTA matching the text => SOLD_OUT
+  challenge_markers: ["just a moment", "checking your browser", "challenge-platform", "captcha-delivery"]
+
+# CONFIG-OWNED watched-event list. `key` is the stable identity — history is keyed
+# on it, so changing `url` (e.g. a slug change) does not reset state.
+events:
+  - key: bts-jakarta-day1
+    name: "BTS World Tour 'ARIRANG' in Jakarta — Day 1"
+    url: https://www.tiket.com/id-id/to-do/bts-jakarta-day1
+
+  - key: weeknd-gos-day2
+    name: "The Weeknd — After Hours Til Dawn, Jakarta (GOS Day 2)"
+    url: https://www.tiket.com/id-id/to-do/theweekndinjakarta-generalonsaleday2
+
+  - key: lany-jakarta-2026
+    name: "LANY — soft world tour, Jakarta (29 Oct 2026)"
+    url: https://www.tiket.com/id-id/to-do/lany-soft-world-tour-in-jakarta-2026-29-oct-gos
+    # Example of a per-event override:
+    # detection:
+    #   sold_out:
+    #     text_any: ["sold out"]
+    #     require_disabled: true

@@ -1,0 +1,6 @@
+.git
+.env
+*.md
+/spike/out
+/testdata
+/out

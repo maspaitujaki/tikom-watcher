@@ -1,0 +1,13 @@
+# secrets — never commit
+.env
+
+# build artifacts
+/watcher
+/tikom
+/out/
+
+# Phase-0 spike diagnostics (throwaway; the .html test fixtures are kept)
+/spike/out/
+
+# OS
+.DS_Store

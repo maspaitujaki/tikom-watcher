@@ -1,0 +1,42 @@
+# Committed configuration (no secrets — those live in .env).
+# Edit `events` to change what's watched, then restart. See config.example.yaml
+# for the fully-commented reference.
+
+poll:
+  interval: 60s
+  jitter: 20s
+  confirm_delay: 5s
+  cooldown_minutes: 30
+  unknown_streak_threshold: 5
+
+# active_hours is optional and omitted here, so we poll 24/7 (drops can happen
+# any time). Uncomment to restrict, e.g.:
+# active_hours:
+#   timezone: Asia/Jakarta
+#   start: "08:00"
+#   end: "23:59"
+
+browser:
+  timeout: 45s
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+detection_defaults:
+  page_ready_selector: '[data-testid="product-card"]'
+  sold_out:
+    cta_selector: button
+    text_any: ["terjual habis", "habis", "sold out"]
+    require_disabled: true
+  challenge_markers: ["just a moment", "checking your browser", "challenge-platform", "captcha-delivery"]
+
+events:
+  - key: bts-jakarta-day1
+    name: "BTS World Tour 'ARIRANG' in Jakarta — Day 1"
+    url: https://www.tiket.com/id-id/to-do/bts-jakarta-day1
+
+  - key: weeknd-gos-day2
+    name: "The Weeknd — After Hours Til Dawn, Jakarta (GOS Day 2)"
+    url: https://www.tiket.com/id-id/to-do/theweekndinjakarta-generalonsaleday2
+
+  - key: lany-jakarta-2026
+    name: "LANY — soft world tour, Jakarta (29 Oct 2026)"
+    url: https://www.tiket.com/id-id/to-do/lany-soft-world-tour-in-jakarta-2026-29-oct-gos

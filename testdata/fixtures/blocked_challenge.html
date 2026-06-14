@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC fixture (not captured live; Phase 0 hit no bot wall).
+  Mimics a Cloudflare interstitial: no purchase section, so detection must
+  return UNKNOWN (never AVAILABLE/SOLD_OUT). Crucially it has NO
+  [data-testid="product-card"], and carries typical challenge markers.
+-->
+<html lang="en-US">
+<head>
+  <meta charset="utf-8">
+  <title>Just a moment...</title>
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+  <div class="main-wrapper" role="main">
+    <div class="main-content">
+      <h1>www.tiket.com</h1>
+      <h2 class="zone-name-title">Checking your browser before accessing the website.</h2>
+      <p id="cf-spinner-please-wait">Please wait while we verify your request&hellip;</p>
+      <noscript>Please enable JavaScript and cookies to continue.</noscript>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var a = document.createElement('script');
+      a.src = '/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js';
+      document.getElementsByTagName('head')[0].appendChild(a);
+    })();
+  </script>
+</body>
+</html>

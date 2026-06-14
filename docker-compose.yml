@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tikom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tikom}
+      POSTGRES_DB: ${POSTGRES_DB:-tikom}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tikom} -d ${POSTGRES_DB:-tikom}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Inside the compose network the DB host is the 'postgres' service.
+      # This overrides any DATABASE_URL from .env (which targets localhost for
+      # running the app outside docker).
+      DATABASE_URL: postgres://${POSTGRES_USER:-tikom}:${POSTGRES_PASSWORD:-tikom}@postgres:5432/${POSTGRES_DB:-tikom}?sslmode=disable
+      CHROME_BIN: /headless-shell/headless-shell
+      CONFIG_PATH: /app/config.yaml
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    # Chrome is told --disable-dev-shm-usage, but give it real shm too for safety.
+    shm_size: "1gb"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
