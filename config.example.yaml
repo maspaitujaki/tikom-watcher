@@ -35,17 +35,13 @@ events:
     name: "BTS World Tour 'ARIRANG' in Jakarta — Day 1"
     url: https://www.tiket.com/id-id/to-do/bts-jakarta-day1
 
-  - key: bts-jakarta-day2
-    name: "BTS World Tour 'ARIRANG' in Jakarta — Day 2"
-    url: https://www.tiket.com/id-id/to-do/bts-jakarta-day2
+  - key: weeknd-gos-day2
+    name: "The Weeknd — After Hours Til Dawn, Jakarta (GOS Day 2)"
+    url: https://www.tiket.com/id-id/to-do/theweekndinjakarta-generalonsaleday2
 
-  # - key: weeknd-gos-day2
-  #   name: "The Weeknd — After Hours Til Dawn, Jakarta (GOS Day 2)"
-  #   url: https://www.tiket.com/id-id/to-do/theweekndinjakarta-generalonsaleday2
-
-  # - key: lany-jakarta-2026
-  #   name: "LANY — soft world tour, Jakarta (29 Oct 2026)"
-  #   url: https://www.tiket.com/id-id/to-do/lany-soft-world-tour-in-jakarta-2026-29-oct-gos
+  - key: lany-jakarta-2026
+    name: "LANY — soft world tour, Jakarta (29 Oct 2026)"
+    url: https://www.tiket.com/id-id/to-do/lany-soft-world-tour-in-jakarta-2026-29-oct-gos
     # Example of a per-event override:
     # detection:
     #   sold_out:

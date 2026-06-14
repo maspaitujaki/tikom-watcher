@@ -3,10 +3,10 @@
 # for the fully-commented reference.
 
 poll:
-  interval: 60s
-  jitter: 20s
+  interval: 15s
+  jitter: 5s
   confirm_delay: 5s
-  cooldown_minutes: 30
+  cooldown_minutes: 1
   unknown_streak_threshold: 5
 
 # active_hours is optional and omitted here, so we poll 24/7 (drops can happen
@@ -33,10 +33,6 @@ events:
     name: "BTS World Tour 'ARIRANG' in Jakarta — Day 1"
     url: https://www.tiket.com/id-id/to-do/bts-jakarta-day1
 
-  - key: weeknd-gos-day2
-    name: "The Weeknd — After Hours Til Dawn, Jakarta (GOS Day 2)"
-    url: https://www.tiket.com/id-id/to-do/theweekndinjakarta-generalonsaleday2
-
-  - key: lany-jakarta-2026
-    name: "LANY — soft world tour, Jakarta (29 Oct 2026)"
-    url: https://www.tiket.com/id-id/to-do/lany-soft-world-tour-in-jakarta-2026-29-oct-gos
+  - key: bts-jakarta-day2
+    name: "BTS World Tour 'ARIRANG' in Jakarta — Day 2"
+    url: https://www.tiket.com/id-id/to-do/bts-jakarta-day2
