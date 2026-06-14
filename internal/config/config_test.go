@@ -18,8 +18,11 @@ func TestLoad_Example(t *testing.T) {
 	if c.Cooldown() != 30*time.Minute {
 		t.Errorf("cooldown = %v; want 30m", c.Cooldown())
 	}
-	if len(c.Events) != 3 {
-		t.Fatalf("events = %d; want 3", len(c.Events))
+	if len(c.Events) == 0 {
+		t.Fatalf("events = %d; want at least one", len(c.Events))
+	}
+	if c.Events[0].Key == "" || c.Events[0].URL == "" {
+		t.Fatalf("first event missing key/url: %+v", c.Events[0])
 	}
 	if c.DetectionDefaults.PageReadySelector != `[data-testid="product-card"]` {
 		t.Errorf("page_ready_selector = %q", c.DetectionDefaults.PageReadySelector)

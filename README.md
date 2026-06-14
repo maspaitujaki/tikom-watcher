@@ -81,6 +81,13 @@ Then, in Telegram, DM your bot:
 - `/start` — subscribe (you'll get the drop alerts)
 - `/stop` — unsubscribe
 
+## Verify the DM end-to-end (localhost mock)
+
+To confirm a real Telegram DM fires on a drop without waiting for tiket.com, use
+the bundled mock site and `config.demo.yaml`. See **[DEMO.md](DEMO.md)** — start
+`cmd/mocksite`, run the watcher with `CONFIG_PATH=config.demo.yaml`, `/start` the
+bot, then flip the event to AVAILABLE from <http://localhost:8099/admin>.
+
 ## Local development
 
 ```bash

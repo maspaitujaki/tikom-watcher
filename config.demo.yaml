@@ -1,0 +1,26 @@
+# Demo config for the localhost mocksite (see DEMO.md). Short intervals so the
+# flip -> DM happens quickly. Run the watcher with CONFIG_PATH=config.demo.yaml.
+
+poll:
+  interval: 10s
+  jitter: 2s
+  confirm_delay: 2s
+  cooldown_minutes: 1
+  unknown_streak_threshold: 3
+
+browser:
+  timeout: 20s
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+detection_defaults:
+  page_ready_selector: '[data-testid="product-card"]'
+  sold_out:
+    cta_selector: button
+    text_any: ["terjual habis", "habis", "sold out"]
+    require_disabled: true
+  challenge_markers: ["just a moment", "checking your browser", "challenge-platform"]
+
+events:
+  - key: mock-bts-day1
+    name: "MOCK: BTS Jakarta Day 1"
+    url: http://localhost:8099/to-do/mock-bts-day1
