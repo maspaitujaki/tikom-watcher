@@ -20,11 +20,20 @@ Every `interval ± jitter` the poller renders each configured event and classifi
 | `SOLD_OUT` | the primary purchase `<button>` is disabled and reads "Terjual habis" |
 | `AVAILABLE` | purchase section rendered and no sold-out button matched (eager default) |
 
-Notifications fire **only** on the stored `SOLD_OUT → AVAILABLE` edge, with:
+Notifications fire on both stored transitions between known states, each stamped
+with the observation time:
 
-- **Confirm-before-alert** — on a flip, re-check once after `confirm_delay`; the
-  re-check is authoritative, filtering single-render glitches without delaying real drops.
-- **Cooldown** — no re-alert for the same event within `cooldown_minutes` (flapping).
+- `SOLD_OUT → AVAILABLE` — "🎟️ Tickets available again!" (a drop).
+- `AVAILABLE → SOLD_OUT` — "🔴 Now sold out."
+
+With:
+
+- **Confirm-before-alert (drops only)** — on a drop, re-check once after
+  `confirm_delay`; the re-check is authoritative, filtering single-render glitches
+  without delaying real drops. The sold-out direction alerts immediately.
+- **Per-direction cooldown** — no re-alert of the same kind for the same event
+  within `cooldown_minutes`; the drop and sold-out cooldowns are independent, so a
+  sold-out alert never suppresses a following drop alert.
 - **Unknown-streak warning** — after `unknown_streak_threshold` consecutive
   `UNKNOWN`s, the admin is DM'd "site may have changed / blocked".
 
@@ -78,7 +87,8 @@ runs with `--no-sandbox --disable-dev-shm-usage` and the service gets `shm_size:
 
 Then, in Telegram, DM your bot:
 
-- `/start` — subscribe (you'll get the drop alerts)
+- `/start` — subscribe (you'll get availability-change alerts)
+- `/status` — list watched events with their last state + last-checked time
 - `/stop` — unsubscribe
 
 ## Verify the DM end-to-end (localhost mock)

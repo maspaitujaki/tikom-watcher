@@ -22,5 +22,5 @@ detection_defaults:
 
 events:
   - key: mock-bts-day1
-    name: "MOCK: BTS Jakarta Day 1"
+    name: "MOCK: Aldi Taher Jakarta Day 1"
     url: http://localhost:8099/to-do/mock-bts-day1

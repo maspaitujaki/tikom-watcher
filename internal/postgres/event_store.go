@@ -40,17 +40,26 @@ func (e *EventStore) EnsureEvents(ctx context.Context, seeds []poll.EventSeed) e
 	return nil
 }
 
-func (e *EventStore) Get(ctx context.Context, eventKey string) (poll.EventState, error) {
+const eventStateColumns = `event_key, last_state, unknown_streak,
+	last_changed_at, last_notified_at, last_soldout_notified_at, last_checked_at`
+
+func scanEventState(row pgx.Row) (poll.EventState, error) {
 	var (
 		st        poll.EventState
 		lastState string
 	)
-	err := e.pool.QueryRow(ctx, `
-		SELECT event_key, last_state, unknown_streak,
-		       last_changed_at, last_notified_at, last_checked_at
-		FROM event_state WHERE event_key = $1`, eventKey).
-		Scan(&st.EventKey, &lastState, &st.UnknownStreak,
-			&st.LastChangedAt, &st.LastNotifiedAt, &st.LastCheckedAt)
+	err := row.Scan(&st.EventKey, &lastState, &st.UnknownStreak,
+		&st.LastChangedAt, &st.LastNotifiedAt, &st.LastSoldOutNotifiedAt, &st.LastCheckedAt)
+	if err != nil {
+		return poll.EventState{}, err
+	}
+	st.LastState = detect.State(lastState)
+	return st, nil
+}
+
+func (e *EventStore) Get(ctx context.Context, eventKey string) (poll.EventState, error) {
+	st, err := scanEventState(e.pool.QueryRow(ctx,
+		`SELECT `+eventStateColumns+` FROM event_state WHERE event_key = $1`, eventKey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Not seeded yet: treat as UNKNOWN so the caller can proceed.
 		return poll.EventState{EventKey: eventKey, LastState: detect.StateUnknown}, nil
@@ -58,8 +67,26 @@ func (e *EventStore) Get(ctx context.Context, eventKey string) (poll.EventState,
 	if err != nil {
 		return poll.EventState{}, err
 	}
-	st.LastState = detect.State(lastState)
 	return st, nil
+}
+
+// AllStates returns the persisted state of every event, keyed by event_key.
+func (e *EventStore) AllStates(ctx context.Context) (map[string]poll.EventState, error) {
+	rows, err := e.pool.Query(ctx, `SELECT `+eventStateColumns+` FROM event_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]poll.EventState)
+	for rows.Next() {
+		st, err := scanEventState(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[st.EventKey] = st
+	}
+	return out, rows.Err()
 }
 
 // Record persists an observation atomically: it bumps unknown_streak on UNKNOWN
@@ -129,9 +156,13 @@ func (e *EventStore) Record(ctx context.Context, eventKey string, observed detec
 	return st, outcome, err
 }
 
-func (e *EventStore) MarkNotified(ctx context.Context, eventKey string, at time.Time) error {
+func (e *EventStore) MarkNotified(ctx context.Context, eventKey string, kind poll.NotifyKind, at time.Time) error {
+	column := "last_notified_at"
+	if kind == poll.NotifySoldOut {
+		column = "last_soldout_notified_at"
+	}
 	_, err := e.pool.Exec(ctx,
-		`UPDATE event_state SET last_notified_at = $2, updated_at = now() WHERE event_key = $1`,
+		`UPDATE event_state SET `+column+` = $2, updated_at = now() WHERE event_key = $1`,
 		eventKey, at)
 	return err
 }

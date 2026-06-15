@@ -1,19 +1,21 @@
 // Package poll is the orchestration layer: on an interval (± jitter) it runs
 // detection over the config-owned event list, persists state, and DMs
-// subscribers on the SOLD_OUT -> AVAILABLE edge.
+// subscribers on availability changes (both SOLD_OUT->AVAILABLE and the reverse).
 //
 // It depends only on interfaces (EventStore, Detector, Notifier, Clock) so the
 // state machine is unit-testable with fakes and the same Poller runs against
-// real Postgres + the rod renderer (Phase 4) in production.
+// real Postgres + the rod renderer in production.
 //
 // State machine per event, each cycle:
 //   - detect -> observed state
-//   - if prev==SOLD_OUT && observed==AVAILABLE: CONFIRM-BEFORE-ALERT — wait
-//     ConfirmDelay, detect once more; the re-check is authoritative for both
-//     persistence and alerting (filters single-render glitches without delay).
+//   - SOLD_OUT -> AVAILABLE (a drop): CONFIRM-BEFORE-ALERT — wait ConfirmDelay,
+//     detect once more; the re-check is authoritative for both persistence and
+//     alerting (filters single-render glitches without delay).
+//   - AVAILABLE -> SOLD_OUT: alert immediately (no confirm).
 //   - persist via EventStore.Record (updates last_*; appends a transition only
 //     on an actual change; bumps unknown_streak on UNKNOWN, resets on known).
-//   - on a confirmed edge, alert active subscribers unless within cooldown.
+//   - alert active subscribers unless within that direction's cooldown
+//     (drop and sold-out cooldowns are tracked independently).
 //   - when unknown_streak crosses the threshold, DM the admin a warning.
 package poll
 
@@ -43,13 +45,23 @@ type EventSeed struct {
 
 // EventState mirrors the persisted event_state row the poller needs.
 type EventState struct {
-	EventKey       string
-	LastState      detect.State
-	UnknownStreak  int
-	LastChangedAt  *time.Time
-	LastNotifiedAt *time.Time
-	LastCheckedAt  *time.Time
+	EventKey              string
+	LastState             detect.State
+	UnknownStreak         int
+	LastChangedAt         *time.Time
+	LastNotifiedAt        *time.Time // AVAILABLE (drop) alert cooldown timestamp
+	LastSoldOutNotifiedAt *time.Time // SOLD_OUT alert cooldown timestamp
+	LastCheckedAt         *time.Time
 }
+
+// NotifyKind identifies which transition direction an alert is for; each has its
+// own independent cooldown timestamp.
+type NotifyKind int
+
+const (
+	NotifyAvailable NotifyKind = iota // SOLD_OUT -> AVAILABLE (a drop)
+	NotifySoldOut                     // AVAILABLE -> SOLD_OUT
+)
 
 // RecordOutcome reports what changed when an observation was persisted.
 type RecordOutcome struct {
@@ -66,7 +78,7 @@ type EventStore interface {
 	EnsureEvents(ctx context.Context, seeds []EventSeed) error
 	Get(ctx context.Context, eventKey string) (EventState, error)
 	Record(ctx context.Context, eventKey string, observed detect.State, at time.Time) (EventState, RecordOutcome, error)
-	MarkNotified(ctx context.Context, eventKey string, at time.Time) error
+	MarkNotified(ctx context.Context, eventKey string, kind NotifyKind, at time.Time) error
 }
 
 // Detector turns a URL + rules into a detection result.
@@ -203,10 +215,12 @@ func (p *Poller) check(ctx context.Context, e Event) {
 	res := p.detector.Detect(ctx, e.URL, e.Rules)
 	observed := res.State
 	authoritative := observed
-	flip := prev.LastState == detect.StateSoldOut && observed == detect.StateAvailable
+	isDrop := prev.LastState == detect.StateSoldOut && observed == detect.StateAvailable
+	isSoldOut := prev.LastState == detect.StateAvailable && observed == detect.StateSoldOut
 
-	if flip {
-		// CONFIRM-BEFORE-ALERT: re-check once; the re-check is authoritative.
+	if isDrop {
+		// CONFIRM-BEFORE-ALERT (drops only): re-check once; the re-check is
+		// authoritative. The sold-out direction alerts immediately (no confirm).
 		if err := p.clock.Sleep(ctx, p.set.ConfirmDelay); err != nil {
 			return // ctx cancelled
 		}
@@ -232,26 +246,36 @@ func (p *Poller) check(ctx context.Context, e Event) {
 		p.warnAdmin(ctx, e, outcome.NewStreak)
 	}
 
-	// Alert only on a confirmed SOLD_OUT -> AVAILABLE edge.
-	if flip && authoritative == detect.StateAvailable {
-		p.alert(ctx, e, prev.LastNotifiedAt, now)
+	switch {
+	case isDrop && authoritative == detect.StateAvailable:
+		// Confirmed SOLD_OUT -> AVAILABLE.
+		p.alert(ctx, e, NotifyAvailable, prev.LastNotifiedAt, now)
+	case isSoldOut:
+		// AVAILABLE -> SOLD_OUT (immediate; authoritative == observed == SOLD_OUT).
+		p.alert(ctx, e, NotifySoldOut, prev.LastSoldOutNotifiedAt, now)
 	}
 }
 
-func (p *Poller) alert(ctx context.Context, e Event, lastNotified *time.Time, now time.Time) {
+func (p *Poller) alert(ctx context.Context, e Event, kind NotifyKind, lastNotified *time.Time, now time.Time) {
 	if withinCooldown(lastNotified, now, p.set.Cooldown) {
-		p.log.Info("drop confirmed but within cooldown; not re-alerting",
-			"event", e.Key, "cooldown", p.set.Cooldown)
+		p.log.Info("transition confirmed but within cooldown; not re-alerting",
+			"event", e.Key, "kind", kind, "cooldown", p.set.Cooldown)
 		return
 	}
-	sent, err := p.notifier.Broadcast(ctx, availableMessage(e))
+	msg := availableMessage(e, now)
+	logMsg := "ALERT sent: tickets available"
+	if kind == NotifySoldOut {
+		msg = soldOutMessage(e, now)
+		logMsg = "ALERT sent: now sold out"
+	}
+	sent, err := p.notifier.Broadcast(ctx, msg)
 	if err != nil {
 		p.log.Error("broadcast partially/fully failed", "event", e.Key, "err", err)
 	}
-	if err := p.store.MarkNotified(ctx, e.Key, now); err != nil {
+	if err := p.store.MarkNotified(ctx, e.Key, kind, now); err != nil {
 		p.log.Error("mark notified failed", "event", e.Key, "err", err)
 	}
-	p.log.Info("ALERT sent: tickets available", "event", e.Key, "subscribers", sent)
+	p.log.Info(logMsg, "event", e.Key, "subscribers", sent)
 }
 
 func (p *Poller) warnAdmin(ctx context.Context, e Event, streak int) {
@@ -283,19 +307,26 @@ func withinCooldown(last *time.Time, now time.Time, cooldown time.Duration) bool
 	return now.Sub(*last) < cooldown
 }
 
-func availableMessage(e Event) string {
-	name := e.Name
-	if name == "" {
-		name = e.Key
+const alertTimeFormat = "2006-01-02 15:04:05 MST"
+
+func availableMessage(e Event, at time.Time) string {
+	return fmt.Sprintf("🎟️ Tickets available again!\n%s\n%s\n🕒 %s",
+		eventName(e), e.URL, at.Format(alertTimeFormat))
+}
+
+func soldOutMessage(e Event, at time.Time) string {
+	return fmt.Sprintf("🔴 Now sold out.\n%s\n%s\n🕒 %s",
+		eventName(e), e.URL, at.Format(alertTimeFormat))
+}
+
+func eventName(e Event) string {
+	if e.Name != "" {
+		return e.Name
 	}
-	return fmt.Sprintf("🎟️ Tickets available again!\n%s\n%s", name, e.URL)
+	return e.Key
 }
 
 func warningMessage(e Event, streak int) string {
-	name := e.Name
-	if name == "" {
-		name = e.Key
-	}
 	return fmt.Sprintf("⚠️ %q has read UNKNOWN %d× in a row — the site may have changed or be blocking us. Check the detection config.\n%s",
-		name, streak, e.URL)
+		eventName(e), streak, e.URL)
 }

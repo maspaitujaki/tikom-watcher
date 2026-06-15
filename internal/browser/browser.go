@@ -41,9 +41,9 @@ type Browser struct {
 	cfg Config
 	log *slog.Logger
 
-	mu      sync.Mutex
-	rod     *rod.Browser
-	launch  *launcher.Launcher
+	mu     sync.Mutex
+	rod    *rod.Browser
+	launch *launcher.Launcher
 }
 
 // New launches the initial browser instance.
@@ -157,8 +157,8 @@ func (b *Browser) launchLocked() error {
 		Headless(b.cfg.Headless).
 		Set("disable-blink-features", "AutomationControlled").
 		Set("lang", "id-ID").
-		Set("no-sandbox").             // required when running as root in a container
-		Set("disable-dev-shm-usage").  // avoid /dev/shm exhaustion in containers
+		Set("no-sandbox").            // required when running as root in a container
+		Set("disable-dev-shm-usage"). // avoid /dev/shm exhaustion in containers
 		Set("disable-gpu")
 	if b.cfg.BinPath != "" {
 		l = l.Bin(b.cfg.BinPath)

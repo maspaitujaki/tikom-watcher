@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 	_ "time/tzdata" // embed the tz database so active_hours works in a minimal image
 
 	"github.com/dimasfaid/tikom/internal/browser"
@@ -72,9 +73,12 @@ func run(log *slog.Logger) error {
 	}
 	defer db.Close()
 
+	evStore := postgres.NewEventStore(db)
+
 	bot, err := notify.New(notify.Config{
 		Token:  token,
 		Store:  postgres.NewSubscriberStore(db),
+		Status: statusReporter{events: cfg.Events, store: evStore},
 		Logger: log,
 	})
 	if err != nil {
@@ -95,7 +99,7 @@ func run(log *slog.Logger) error {
 
 	poller := poll.New(
 		buildEvents(cfg),
-		postgres.NewEventStore(db),
+		evStore,
 		poll.RendererDetector(br),
 		bot,
 		poll.SystemClock{},
@@ -130,6 +134,38 @@ func buildEvents(cfg *config.Config) []poll.Event {
 		}
 	}
 	return events
+}
+
+// statusReporter joins the config event list (for names) with persisted state to
+// power the bot's /status command.
+type statusReporter struct {
+	events []config.Event
+	store  *postgres.EventStore
+}
+
+func (r statusReporter) EventStatuses(ctx context.Context) ([]notify.EventStatus, error) {
+	states, err := r.store.AllStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]notify.EventStatus, 0, len(r.events))
+	for _, e := range r.events {
+		state := "UNKNOWN"
+		var lastChecked *time.Time
+		if st, ok := states[e.Key]; ok {
+			if st.LastState != "" {
+				state = string(st.LastState)
+			}
+			lastChecked = st.LastCheckedAt
+		}
+		out = append(out, notify.EventStatus{
+			Key:           e.Key,
+			Name:          e.Name,
+			State:         state,
+			LastCheckedAt: lastChecked,
+		})
+	}
+	return out, nil
 }
 
 func buildSettings(cfg *config.Config, adminChatID int64) poll.Settings {

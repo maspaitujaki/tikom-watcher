@@ -231,4 +231,45 @@ func TestPoller_EndToEnd_Postgres(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("transitions = %d; want 2 (UNKNOWN->SOLD_OUT, SOLD_OUT->AVAILABLE)", n)
 	}
+
+	// Sweep 3: AVAILABLE -> SOLD_OUT alerts immediately (no confirm), and uses the
+	// separate sold-out cooldown column (not suppressed by the recent drop alert).
+	det.load(res(detect.StateSoldOut))
+	p.Sweep(ctx)
+	if ntf.broadcasts != 2 {
+		t.Fatalf("sold-out transition must alert (independent cooldown); broadcasts=%d", ntf.broadcasts)
+	}
+	st, _ = es.Get(ctx, ev.Key)
+	if st.LastState != detect.StateSoldOut || st.LastSoldOutNotifiedAt == nil {
+		t.Fatalf("DB after sold-out: state=%s soldout_notified=%v", st.LastState, st.LastSoldOutNotifiedAt)
+	}
+}
+
+func TestEventStore_AllStates(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	es := NewEventStore(db)
+
+	if err := es.EnsureEvents(ctx, []poll.EventSeed{
+		{Key: "a", URL: "http://a"}, {Key: "b", URL: "http://b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := es.Record(ctx, "a", detect.StateSoldOut, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := es.AllStates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("AllStates len = %d; want 2", len(states))
+	}
+	if states["a"].LastState != detect.StateSoldOut || states["a"].LastCheckedAt == nil {
+		t.Errorf("a: state=%s checked=%v; want SOLD_OUT + checked", states["a"].LastState, states["a"].LastCheckedAt)
+	}
+	if states["b"].LastState != detect.StateUnknown || states["b"].LastCheckedAt != nil {
+		t.Errorf("b: state=%s checked=%v; want UNKNOWN + never checked", states["b"].LastState, states["b"].LastCheckedAt)
+	}
 }

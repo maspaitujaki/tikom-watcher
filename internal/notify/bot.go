@@ -1,6 +1,7 @@
 // Package notify is the Telegram side of the watcher: a long-polling bot that
-// manages subscribers (/start, /stop) and a send-notification function used by
-// the poller (Phase 3) to DM subscribers on a SOLD_OUT -> AVAILABLE drop.
+// manages subscribers (/start, /stop), reports watched events (/status), and
+// provides the send-notification function the poller uses to DM subscribers on
+// availability changes.
 //
 // No public webhook is used — only Telegram long-polling. The bot token comes
 // from the caller (env in cmd/bot). Persistence is via the SubscriberStore
@@ -10,7 +11,9 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -18,11 +21,28 @@ import (
 
 const defaultPollTimeout = 10 * time.Second
 
+// alertTimeFormat matches the poller's timestamp format for consistency.
+const alertTimeFormat = "2006-01-02 15:04:05 MST"
+
 const (
-	welcomeMsg = "✅ You're subscribed! I'll DM you the moment a watched sold-out event has tickets again.\n\nSend /stop anytime to unsubscribe."
-	goodbyeMsg = "🛑 You're unsubscribed. Send /start to subscribe again."
-	errReply   = "Sorry, something went wrong on my end. Please try again in a moment."
+	welcomeMsg           = "✅ You're subscribed! I'll DM you whenever a watched event changes availability — both when tickets drop and when it sells out.\n\nSend /status to see what's being watched, or /stop to unsubscribe."
+	goodbyeMsg           = "🛑 You're unsubscribed. Send /start to subscribe again."
+	errReply             = "Sorry, something went wrong on my end. Please try again in a moment."
+	statusUnavailableMsg = "Status is unavailable right now."
 )
+
+// EventStatus is one row of the /status report.
+type EventStatus struct {
+	Key           string
+	Name          string
+	State         string
+	LastCheckedAt *time.Time
+}
+
+// StatusProvider supplies the current state of every watched event for /status.
+type StatusProvider interface {
+	EventStatuses(ctx context.Context) ([]EventStatus, error)
+}
 
 // sender is the subset of *tele.Bot used for outbound messages, so tests can
 // inject a fake without touching the network.
@@ -32,18 +52,20 @@ type sender interface {
 
 // Bot wraps a telebot long-poller plus the subscriber store.
 type Bot struct {
-	tb    *tele.Bot
-	snd   sender
-	store SubscriberStore
-	log   *slog.Logger
+	tb     *tele.Bot
+	snd    sender
+	store  SubscriberStore
+	status StatusProvider // optional; powers /status
+	log    *slog.Logger
 }
 
 // Config configures New.
 type Config struct {
 	Token       string
 	Store       SubscriberStore
-	Logger      *slog.Logger // defaults to slog.Default()
-	PollTimeout time.Duration // long-poll timeout; defaults to 10s
+	Status      StatusProvider // optional; if nil, /status replies "unavailable"
+	Logger      *slog.Logger   // defaults to slog.Default()
+	PollTimeout time.Duration  // long-poll timeout; defaults to 10s
 }
 
 // New builds a long-polling bot. It contacts the Telegram API once (getMe) to
@@ -75,7 +97,7 @@ func New(cfg Config) (*Bot, error) {
 		return nil, err
 	}
 
-	b := &Bot{tb: tb, snd: tb, store: cfg.Store, log: log}
+	b := &Bot{tb: tb, snd: tb, store: cfg.Store, status: cfg.Status, log: log}
 	b.routes()
 	return b, nil
 }
@@ -94,6 +116,42 @@ func (b *Bot) routes() {
 		}
 		return c.Send(goodbyeMsg)
 	})
+	b.tb.Handle("/status", func(c tele.Context) error {
+		return c.Send(b.handleStatus(context.Background()))
+	})
+}
+
+// handleStatus returns the formatted /status reply.
+func (b *Bot) handleStatus(ctx context.Context) string {
+	if b.status == nil {
+		return statusUnavailableMsg
+	}
+	statuses, err := b.status.EventStatuses(ctx)
+	if err != nil {
+		b.log.Error("status provider failed", "err", err)
+		return statusUnavailableMsg
+	}
+	return formatStatus(statuses)
+}
+
+func formatStatus(statuses []EventStatus) string {
+	if len(statuses) == 0 {
+		return "No events are being watched."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "📋 Watching %d event(s):\n", len(statuses))
+	for _, s := range statuses {
+		name := s.Name
+		if name == "" {
+			name = s.Key
+		}
+		checked := "never checked"
+		if s.LastCheckedAt != nil {
+			checked = "checked " + s.LastCheckedAt.Format(alertTimeFormat)
+		}
+		fmt.Fprintf(&b, "\n• %s — %s (%s)", name, s.State, checked)
+	}
+	return b.String()
 }
 
 // handleStart upserts the subscriber; separated from the telebot glue so it can

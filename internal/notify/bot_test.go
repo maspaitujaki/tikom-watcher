@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -136,5 +138,49 @@ func TestNewSubscriber_FallsBackToUserID(t *testing.T) {
 	want := Subscriber{ChatID: 99, Username: "u", FirstName: "F"}
 	if got != want {
 		t.Fatalf("newSubscriber = %+v; want %+v", got, want)
+	}
+}
+
+type fakeStatus struct {
+	statuses []EventStatus
+	err      error
+}
+
+func (f fakeStatus) EventStatuses(context.Context) ([]EventStatus, error) {
+	return f.statuses, f.err
+}
+
+func TestHandleStatus_NilProvider(t *testing.T) {
+	b := newTestBot(NewMemoryStore(), &fakeSender{})
+	if got := b.handleStatus(context.Background()); got != statusUnavailableMsg {
+		t.Fatalf("nil provider: got %q; want %q", got, statusUnavailableMsg)
+	}
+}
+
+func TestHandleStatus_ProviderError(t *testing.T) {
+	b := newTestBot(NewMemoryStore(), &fakeSender{})
+	b.status = fakeStatus{err: errors.New("db down")}
+	if got := b.handleStatus(context.Background()); got != statusUnavailableMsg {
+		t.Fatalf("provider error: got %q; want unavailable", got)
+	}
+}
+
+func TestFormatStatus(t *testing.T) {
+	checked := time.Date(2026, 6, 15, 9, 30, 0, 0, time.UTC)
+	out := formatStatus([]EventStatus{
+		{Key: "bts-1", Name: "BTS Day 1", State: "SOLD_OUT", LastCheckedAt: &checked},
+		{Key: "bts-2", Name: "BTS Day 2", State: "UNKNOWN", LastCheckedAt: nil},
+	})
+
+	for _, want := range []string{"Watching 2", "BTS Day 1", "SOLD_OUT", "2026-06-15", "BTS Day 2", "never checked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFormatStatus_Empty(t *testing.T) {
+	if out := formatStatus(nil); !strings.Contains(out, "No events") {
+		t.Fatalf("empty status: got %q", out)
 	}
 }

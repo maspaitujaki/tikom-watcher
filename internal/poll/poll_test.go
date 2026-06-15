@@ -61,10 +61,14 @@ func (f *fakeStore) Record(_ context.Context, key string, observed detect.State,
 	return *s, RecordOutcome{Changed: changed, From: from, To: observed, OldStreak: old, NewStreak: newStreak}, nil
 }
 
-func (f *fakeStore) MarkNotified(_ context.Context, key string, at time.Time) error {
+func (f *fakeStore) MarkNotified(_ context.Context, key string, kind NotifyKind, at time.Time) error {
 	if s, ok := f.st[key]; ok {
 		c := at
-		s.LastNotifiedAt = &c
+		if kind == NotifySoldOut {
+			s.LastSoldOutNotifiedAt = &c
+		} else {
+			s.LastNotifiedAt = &c
+		}
 	}
 	return nil
 }
@@ -177,6 +181,10 @@ func TestCheck_ConfirmedDrop_Alerts(t *testing.T) {
 	if !strings.Contains(ntf.broadcasts[0], testEvent.URL) {
 		t.Errorf("alert should contain URL; got %q", ntf.broadcasts[0])
 	}
+	// The clock starts at 2026-06-14; the message must carry the timestamp.
+	if !strings.Contains(ntf.broadcasts[0], "2026-06-14") {
+		t.Errorf("alert should contain the observed timestamp; got %q", ntf.broadcasts[0])
+	}
 	if store.st["e1"].LastNotifiedAt == nil {
 		t.Error("last_notified_at should be set after alert")
 	}
@@ -206,34 +214,47 @@ func TestCheck_CooldownSuppressesReAlert(t *testing.T) {
 	p, store, det, ntf, clk := newHarness(t, defaultSettings())
 	store.seed("e1", detect.StateSoldOut)
 
-	// A: confirmed drop -> alert #1
+	// Count drop alerts specifically (flap steps below also emit sold-out alerts).
+	dropAlerts := func() int { return countContains(ntf.broadcasts, "available again") }
+
+	// A: confirmed drop -> drop alert #1
 	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
 	p.check(ctx, testEvent)
-	if len(ntf.broadcasts) != 1 {
-		t.Fatalf("want 1 alert after first drop; got %d", len(ntf.broadcasts))
+	if dropAlerts() != 1 {
+		t.Fatalf("want 1 drop alert; got %d", dropAlerts())
 	}
 
-	// B: flaps back to sold out (not an edge)
+	// B: flaps back to sold out
 	det.load(res(detect.StateSoldOut))
 	p.check(ctx, testEvent)
 
-	// C: drops again only 10 min later -> within 30m cooldown -> suppressed
+	// C: drops again only 10 min later -> within 30m drop cooldown -> suppressed
 	clk.t = clk.t.Add(10 * time.Minute)
 	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
 	p.check(ctx, testEvent)
-	if len(ntf.broadcasts) != 1 {
-		t.Fatalf("re-alert within cooldown must be suppressed; got %d", len(ntf.broadcasts))
+	if dropAlerts() != 1 {
+		t.Fatalf("re-drop within cooldown must be suppressed; got %d drop alerts", dropAlerts())
 	}
 
-	// D: well past cooldown -> alert #2 (needs to go SOLD_OUT then AVAILABLE again)
+	// D: well past cooldown -> drop alert #2 (go SOLD_OUT then AVAILABLE again)
 	clk.t = clk.t.Add(31 * time.Minute)
 	det.load(res(detect.StateSoldOut))
 	p.check(ctx, testEvent)
 	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
 	p.check(ctx, testEvent)
-	if len(ntf.broadcasts) != 2 {
-		t.Fatalf("want 2 alerts after cooldown elapsed; got %d", len(ntf.broadcasts))
+	if dropAlerts() != 2 {
+		t.Fatalf("want 2 drop alerts after cooldown elapsed; got %d", dropAlerts())
 	}
+}
+
+func countContains(msgs []string, sub string) int {
+	n := 0
+	for _, m := range msgs {
+		if strings.Contains(strings.ToLower(m), strings.ToLower(sub)) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestCheck_UnknownStreakWarnsOnCrossingOnce(t *testing.T) {
@@ -282,6 +303,85 @@ func TestCheck_UnknownStreak_NoAdmin_NoWarnNoPanic(t *testing.T) {
 	}
 	if len(ntf.admin) != 0 {
 		t.Fatalf("no admin configured: want 0 warnings; got %d", len(ntf.admin))
+	}
+}
+
+func TestCheck_AvailableToSoldOut_AlertsImmediately(t *testing.T) {
+	p, store, det, ntf, _ := newHarness(t, defaultSettings())
+	store.seed("e1", detect.StateAvailable)
+	det.load(res(detect.StateSoldOut)) // ONLY one result: no confirm re-check for sold-out
+
+	p.check(context.Background(), testEvent)
+
+	if len(ntf.broadcasts) != 1 {
+		t.Fatalf("sold-out transition must alert once; got %d", len(ntf.broadcasts))
+	}
+	if !strings.Contains(strings.ToLower(ntf.broadcasts[0]), "sold out") {
+		t.Errorf("alert should say sold out; got %q", ntf.broadcasts[0])
+	}
+	if !strings.Contains(ntf.broadcasts[0], "2026-06-14") {
+		t.Errorf("sold-out alert should carry a timestamp; got %q", ntf.broadcasts[0])
+	}
+	if store.st["e1"].LastSoldOutNotifiedAt == nil {
+		t.Error("last_soldout_notified_at should be set")
+	}
+	if store.st["e1"].LastState != detect.StateSoldOut {
+		t.Fatalf("state = %s; want SOLD_OUT", store.st["e1"].LastState)
+	}
+	// No confirm re-check means the detector queue had exactly one item consumed.
+	if len(det.q) != 0 {
+		t.Errorf("sold-out path must not re-check; %d detect calls left unconsumed", len(det.q))
+	}
+}
+
+func TestCheck_SoldOutCooldownIndependentOfDrop(t *testing.T) {
+	ctx := context.Background()
+	p, store, det, ntf, _ := newHarness(t, defaultSettings())
+
+	// A confirmed drop sets the AVAILABLE (drop) cooldown timestamp.
+	store.seed("e1", detect.StateSoldOut)
+	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	p.check(ctx, testEvent)
+	if len(ntf.broadcasts) != 1 {
+		t.Fatalf("want 1 drop alert; got %d", len(ntf.broadcasts))
+	}
+
+	// Immediately flips to SOLD_OUT: must still alert (sold-out cooldown is separate),
+	// even though we're within the drop cooldown window.
+	det.load(res(detect.StateSoldOut))
+	p.check(ctx, testEvent)
+	if len(ntf.broadcasts) != 2 {
+		t.Fatalf("sold-out alert must not be suppressed by the drop cooldown; got %d", len(ntf.broadcasts))
+	}
+}
+
+func TestCheck_SoldOutCooldownSuppressesRepeat(t *testing.T) {
+	ctx := context.Background()
+	p, store, det, ntf, clk := newHarness(t, defaultSettings()) // cooldown 30m
+
+	// First sold-out alert.
+	store.seed("e1", detect.StateAvailable)
+	det.load(res(detect.StateSoldOut))
+	p.check(ctx, testEvent)
+	if len(ntf.broadcasts) != 1 {
+		t.Fatalf("want 1 sold-out alert; got %d", len(ntf.broadcasts))
+	}
+
+	// Flap back to AVAILABLE (a drop alert), then sold out again within cooldown.
+	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	p.check(ctx, testEvent)
+	clk.t = clk.t.Add(5 * time.Minute) // still < 30m sold-out cooldown
+	det.load(res(detect.StateSoldOut))
+	p.check(ctx, testEvent)
+
+	soldOutAlerts := 0
+	for _, m := range ntf.broadcasts {
+		if strings.Contains(strings.ToLower(m), "sold out") {
+			soldOutAlerts++
+		}
+	}
+	if soldOutAlerts != 1 {
+		t.Fatalf("second sold-out within cooldown must be suppressed; sold-out alerts = %d", soldOutAlerts)
 	}
 }
 
