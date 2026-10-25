@@ -21,7 +21,7 @@ browser:
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 detection_defaults:
-  page_ready_selector: '[data-testid="product-card"]'
+  page_ready_selector: '[class*="EventSaleCountdown_container"]'
   sold_out:
     cta_selector: button
     text_any: ["terjual habis", "habis", "sold out"]
