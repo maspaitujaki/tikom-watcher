@@ -17,6 +17,10 @@ poll:
 #   start: "08:00"
 #   end: "23:59"
 
+recap:
+  timezone: Asia/Jakarta
+  at: "21:00"
+
 browser:
   timeout: 45s
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

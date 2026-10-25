@@ -37,6 +37,14 @@ With:
 - **Unknown-streak warning** — after `unknown_streak_threshold` consecutive
   `UNKNOWN`s, the admin is DM'd "site may have changed / blocked".
 
+- **Daily recap** — once a day at `recap.at` in `recap.timezone` (default 21:00
+  `Asia/Jakarta`, i.e. 9 PM GMT+7), every subscriber gets the current status of each
+  event plus watcher health since the previous recap (checks run and how many came
+  back `UNKNOWN`). It is sent on quiet days too, as proof the watcher is alive. The
+  last send is stored in Postgres, so a restart never repeats it; if the watcher was
+  down at 21:00 it catches up once that same day, never the next morning. Omit the
+  `recap:` block to disable it.
+
 Identity is the stable `event_key`, so changing an event's URL/slug never resets its history.
 
 ## Layout
@@ -49,6 +57,7 @@ internal/detect  pure classification (Classify) + config-driven Rules
 internal/browser one reused headless Chrome: per-check timeout, crash recovery, retry/backoff
 internal/notify  Telegram long-polling bot + SubscriberStore + Broadcast
 internal/poll    the orchestration state machine (interfaces + edge logic)
+internal/recap   daily recap scheduler + message (status per event, watcher health)
 internal/postgres pgx pool, goose embedded migrations, SubscriberStore + EventStore
 internal/config  YAML loader (poll timing, active hours, detection rules, events)
 testdata/fixtures saved tiket.com HTML used by detection tests
@@ -67,7 +76,7 @@ cp .env.example .env        # fill in TELEGRAM_BOT_TOKEN, POSTGRES_PASSWORD, etc
 ```
 
 - `config.yaml` (committed, no secrets): poll timing, optional `active_hours`,
-  browser settings, detection rules, and the **events** list.
+  optional `recap` (daily DM time + timezone), browser settings, detection rules, and the **events** list.
 - `.env` (gitignored): `TELEGRAM_BOT_TOKEN`, `ADMIN_CHAT_ID` (optional),
   `POSTGRES_*`, and `DATABASE_URL` (for non-docker runs).
 

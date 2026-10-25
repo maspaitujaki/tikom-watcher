@@ -28,7 +28,7 @@ func testDB(t *testing.T) *DB {
 		t.Fatalf("open: %v", err)
 	}
 	if _, err := db.Pool.Exec(context.Background(),
-		`TRUNCATE subscribers, event_state, state_transitions`); err != nil {
+		`TRUNCATE subscribers, event_state, state_transitions, recap_state`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	t.Cleanup(db.Close)
@@ -271,5 +271,67 @@ func TestEventStore_AllStates(t *testing.T) {
 	}
 	if states["b"].LastState != detect.StateUnknown || states["b"].LastCheckedAt != nil {
 		t.Errorf("b: state=%s checked=%v; want UNKNOWN + never checked", states["b"].LastState, states["b"].LastCheckedAt)
+	}
+}
+
+func TestEventStore_RecordCountsChecksAndUnknowns(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	es := NewEventStore(db)
+	now := time.Now()
+
+	if err := es.EnsureEvents(ctx, []poll.EventSeed{{Key: "k", URL: "u"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// UNKNOWN (no change), SOLD_OUT (change), SOLD_OUT (no change), UNKNOWN (change).
+	for i, s := range []detect.State{
+		detect.StateUnknown, detect.StateSoldOut, detect.StateSoldOut, detect.StateUnknown,
+	} {
+		if _, _, err := es.Record(ctx, "k", s, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, _ := es.Get(ctx, "k")
+	if st.ChecksSinceRecap != 4 || st.UnknownSinceRecap != 2 {
+		t.Fatalf("checks=%d unknown=%d; want 4,2 (counted on changed and unchanged checks alike)",
+			st.ChecksSinceRecap, st.UnknownSinceRecap)
+	}
+}
+
+func TestEventStore_MarkRecapSent_ResetsCountersAndRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	es := NewEventStore(db)
+	now := time.Now().Truncate(time.Microsecond) // Postgres timestamptz precision
+
+	if at, err := es.LastRecapAt(ctx); err != nil || at != nil {
+		t.Fatalf("LastRecapAt before any recap = %v, %v; want nil, nil", at, err)
+	}
+
+	if err := es.EnsureEvents(ctx, []poll.EventSeed{{Key: "k", URL: "u"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := es.Record(ctx, "k", detect.StateUnknown, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := es.MarkRecapSent(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	// A second mark must update the single row, not fail on the primary key.
+	later := now.Add(24 * time.Hour)
+	if err := es.MarkRecapSent(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+
+	at, err := es.LastRecapAt(ctx)
+	if err != nil || at == nil || !at.Equal(later) {
+		t.Fatalf("LastRecapAt = %v, %v; want %v", at, err, later)
+	}
+	st, _ := es.Get(ctx, "k")
+	if st.ChecksSinceRecap != 0 || st.UnknownSinceRecap != 0 {
+		t.Fatalf("counters = %d,%d; want reset to 0,0", st.ChecksSinceRecap, st.UnknownSinceRecap)
 	}
 }

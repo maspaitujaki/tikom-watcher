@@ -41,7 +41,8 @@ func (e *EventStore) EnsureEvents(ctx context.Context, seeds []poll.EventSeed) e
 }
 
 const eventStateColumns = `event_key, last_state, unknown_streak,
-	last_changed_at, last_notified_at, last_soldout_notified_at, last_checked_at`
+	last_changed_at, last_notified_at, last_soldout_notified_at, last_checked_at,
+	checks_since_recap, unknown_since_recap`
 
 func scanEventState(row pgx.Row) (poll.EventState, error) {
 	var (
@@ -49,7 +50,8 @@ func scanEventState(row pgx.Row) (poll.EventState, error) {
 		lastState string
 	)
 	err := row.Scan(&st.EventKey, &lastState, &st.UnknownStreak,
-		&st.LastChangedAt, &st.LastNotifiedAt, &st.LastSoldOutNotifiedAt, &st.LastCheckedAt)
+		&st.LastChangedAt, &st.LastNotifiedAt, &st.LastSoldOutNotifiedAt, &st.LastCheckedAt,
+		&st.ChecksSinceRecap, &st.UnknownSinceRecap)
 	if err != nil {
 		return poll.EventState{}, err
 	}
@@ -91,7 +93,8 @@ func (e *EventStore) AllStates(ctx context.Context) (map[string]poll.EventState,
 
 // Record persists an observation atomically: it bumps unknown_streak on UNKNOWN
 // (resets to 0 otherwise), and on an actual state change updates last_changed_at
-// and appends a state_transitions row.
+// and appends a state_transitions row. Every call also bumps the since-recap
+// health counters (checks, and unknowns when observed is UNKNOWN).
 func (e *EventStore) Record(ctx context.Context, eventKey string, observed detect.State, at time.Time) (poll.EventState, poll.RecordOutcome, error) {
 	tx, err := e.pool.Begin(ctx)
 	if err != nil {
@@ -116,17 +119,20 @@ func (e *EventStore) Record(ctx context.Context, eventKey string, observed detec
 
 	from := detect.State(fromStr)
 	changed := from != observed
-	newStreak := 0
+	newStreak, unknownInc := 0, 0
 	if observed == detect.StateUnknown {
 		newStreak = oldStreak + 1
+		unknownInc = 1
 	}
 
 	if changed {
 		if _, err := tx.Exec(ctx, `
 			UPDATE event_state SET
 				last_state = $2, unknown_streak = $3,
-				last_checked_at = $4, last_changed_at = $4, updated_at = now()
-			WHERE event_key = $1`, eventKey, string(observed), newStreak, at); err != nil {
+				last_checked_at = $4, last_changed_at = $4, updated_at = now(),
+				checks_since_recap = checks_since_recap + 1,
+				unknown_since_recap = unknown_since_recap + $5
+			WHERE event_key = $1`, eventKey, string(observed), newStreak, at, unknownInc); err != nil {
 			return poll.EventState{}, poll.RecordOutcome{}, err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -138,8 +144,10 @@ func (e *EventStore) Record(ctx context.Context, eventKey string, observed detec
 	} else {
 		if _, err := tx.Exec(ctx, `
 			UPDATE event_state SET
-				unknown_streak = $2, last_checked_at = $3, updated_at = now()
-			WHERE event_key = $1`, eventKey, newStreak, at); err != nil {
+				unknown_streak = $2, last_checked_at = $3, updated_at = now(),
+				checks_since_recap = checks_since_recap + 1,
+				unknown_since_recap = unknown_since_recap + $4
+			WHERE event_key = $1`, eventKey, newStreak, at, unknownInc); err != nil {
 			return poll.EventState{}, poll.RecordOutcome{}, err
 		}
 	}
@@ -165,4 +173,39 @@ func (e *EventStore) MarkNotified(ctx context.Context, eventKey string, kind pol
 		`UPDATE event_state SET `+column+` = $2, updated_at = now() WHERE event_key = $1`,
 		eventKey, at)
 	return err
+}
+
+// LastRecapAt returns when the last daily recap was sent, or nil if none yet.
+func (e *EventStore) LastRecapAt(ctx context.Context) (*time.Time, error) {
+	var at time.Time
+	err := e.pool.QueryRow(ctx, `SELECT last_recap_at FROM recap_state WHERE id = 1`).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &at, nil
+}
+
+// MarkRecapSent records the recap time and zeroes the since-recap health counters
+// in one transaction. Checks recorded between the recap's snapshot and this reset
+// are dropped; that is acceptable for a health summary.
+func (e *EventStore) MarkRecapSent(ctx context.Context, at time.Time) error {
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO recap_state (id, last_recap_at) VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE SET last_recap_at = EXCLUDED.last_recap_at`, at); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE event_state SET checks_since_recap = 0, unknown_since_recap = 0`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

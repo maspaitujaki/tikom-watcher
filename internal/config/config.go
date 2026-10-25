@@ -40,6 +40,7 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 type Config struct {
 	Poll              PollConfig    `yaml:"poll"`
 	ActiveHours       *ActiveHours  `yaml:"active_hours"`
+	Recap             *RecapConfig  `yaml:"recap"`
 	Browser           BrowserConfig `yaml:"browser"`
 	DetectionDefaults detect.Rules  `yaml:"detection_defaults"`
 	Events            []Event       `yaml:"events"`
@@ -70,6 +71,21 @@ type ActiveHours struct {
 	loc              *time.Location
 	startMin, endMin int
 }
+
+// RecapConfig schedules the daily recap DM. Omit the block to disable it.
+type RecapConfig struct {
+	Timezone string `yaml:"timezone"` // defaults to Asia/Jakarta
+	At       string `yaml:"at"`       // "HH:MM" local time; defaults to 21:00
+
+	loc   *time.Location
+	atMin int
+}
+
+// Location returns the recap's timezone (valid after Load).
+func (r *RecapConfig) Location() *time.Location { return r.loc }
+
+// AtMinutes returns the send time as minutes after local midnight (valid after Load).
+func (r *RecapConfig) AtMinutes() int { return r.atMin }
 
 // Event is one watched concert page. Key is the stable identity (history is
 // keyed on it, never the URL, so a slug change does not reset state).
@@ -146,6 +162,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: active_hours: %w", err)
 		}
 	}
+	if c.Recap != nil {
+		if err := c.Recap.parse(); err != nil {
+			return fmt.Errorf("config: recap: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -194,6 +215,25 @@ func (a *ActiveHours) parse() error {
 		return fmt.Errorf("bad end: %w", err)
 	}
 	a.loc, a.startMin, a.endMin = loc, s, e
+	return nil
+}
+
+func (r *RecapConfig) parse() error {
+	if r.Timezone == "" {
+		r.Timezone = "Asia/Jakarta"
+	}
+	if r.At == "" {
+		r.At = "21:00"
+	}
+	loc, err := time.LoadLocation(r.Timezone)
+	if err != nil {
+		return fmt.Errorf("bad timezone %q: %w", r.Timezone, err)
+	}
+	at, err := parseHHMM(r.At)
+	if err != nil {
+		return fmt.Errorf("bad at: %w", err)
+	}
+	r.loc, r.atMin = loc, at
 	return nil
 }
 

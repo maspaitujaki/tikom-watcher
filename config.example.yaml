@@ -15,6 +15,11 @@ active_hours:
   start: "08:00"
   end: "23:59"
 
+# Optional. Omit to disable the daily recap DM (status per event + watcher health).
+recap:
+  timezone: Asia/Jakarta     # GMT+7
+  at: "21:00"                # local time the recap is sent
+
 # Consumed by the browser layer (Phase 4).
 browser:
   timeout: 45s

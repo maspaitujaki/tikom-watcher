@@ -74,12 +74,14 @@ calls the **notify** bot to DM subscribers. The bot also serves inbound commands
   - `notify` — the Telegram bot, subscriber store interface + in-memory impl, and
     the broadcast/send functions.
   - `poll` — the orchestration state machine and all its collaborator interfaces.
+  - `recap` — the daily recap scheduler: sleeps to the configured local send time,
+    broadcasts status per event + health counters, and records the send.
   - `postgres` — pgx pool, embedded goose migrations, and the concrete stores.
   - `config` — YAML config schema, loader, validation, and per-event rule merging.
   - `mocksite` — an in-memory HTTP server that serves a tiket-like event page whose
     availability can be flipped at runtime (used for end-to-end testing).
 - `internal/postgres/migrations/` — versioned SQL migrations applied by goose
-  (`00001_init.sql`, `00002_event_state_soldout_notified.sql`).
+  (`00001_init.sql`, `00002_event_state_soldout_notified.sql`, `00003_recap.sql`).
 - `testdata/fixtures/` — saved tiket.com HTML (`sold_out_bts.html`,
   `on_sale_weeknd.html`, `on_sale_lany.html`) plus a synthetic `blocked_challenge.html`,
   used by `internal/detect` tests.
@@ -150,6 +152,25 @@ into `subscribers` (reactivating if previously stopped); `/stop` deactivates;
 which joins the config event list with `EventStore.AllStates` and replies with
 each event's `last_state` and `last_checked_at`.
 
+**Daily recap.** When `recap:` is configured, `cmd/watcher` starts `recap.Recapper.Run`
+in its own goroutine (same ctx as the poller, so SIGTERM stops it). It is separate
+from `Poller.Run` because a sweep, and especially `repeatAvailable`, can block for
+longer than a send time can tolerate. Each pass:
+
+1. Compute today's send time (`recap.at` in `recap.timezone`) from `Clock.Now()`.
+2. Due when now is past it and `recap_state.last_recap_at` is earlier than it
+   (`LastRecapAt`). The send time is always derived from *now's own local day*, so a
+   recap missed yesterday is never delivered the next morning.
+3. Build the text from `EventStore.AllStates` and `Notifier.Broadcast` it. Health is
+   `checks_since_recap` / `unknown_since_recap`, which `EventStore.Record` bumps on
+   every check (changed or not) in the same transaction as the state update.
+4. `MarkRecapSent` stores the time and zeroes the counters in one transaction. A
+   broadcast that fails for everyone is retried after a minute; a partial failure
+   counts as sent, since retrying would duplicate the DM for those who got it.
+
+The first recap after a fresh deploy sends immediately if the deploy is past the send
+time; its health window is simply everything counted since migration `00003`.
+
 ## 6. Dependencies & Integrations
 
 - **tiket.com** — the watched site; loaded via headless Chrome over HTTPS.
@@ -170,7 +191,8 @@ Two-way split, enforced deliberately:
 
 - **`config.yaml`** (committed, no secrets) — poll timing (`interval`, `jitter`,
   `repeat_interval`, `repeat_duration`, `cooldown_minutes`, `unknown_streak_threshold`), optional
-  `active_hours` (timezone window), `browser` (timeout, user agent),
+  `active_hours` (timezone window), optional `recap` (`timezone`, `at` "HH:MM";
+  defaults `Asia/Jakarta` / `21:00`; block omitted = recap disabled), `browser` (timeout, user agent),
   `detection_defaults`, and the `events` list (`key`, `name`, `url`, optional
   per-event `detection` override). `config.example.yaml` is the annotated
   reference; `config.demo.yaml` targets the local mock site.
@@ -238,4 +260,4 @@ Tests live beside the code as `_test.go` files. Run everything with `go test
   only `cmd/watcher` is. Phase-N references in comments are historical build notes.
 - **Toolchain vs image.** `go.mod` declares `go 1.25.7`; the `Dockerfile` builds
   with `golang:1.26-bookworm` and runs on `chromedp/headless-shell`. The watcher
-  imports `_ "time/tzdata"` so `active_hours` timezones work in the minimal image.
+  imports `_ "time/tzdata"` so `active_hours` and `recap` timezones work in the minimal image.

@@ -24,13 +24,14 @@ import (
 	"strconv"
 	"syscall"
 	"time"
-	_ "time/tzdata" // embed the tz database so active_hours works in a minimal image
+	_ "time/tzdata" // embed the tz database so active_hours and recap work in a minimal image
 
 	"github.com/dimasfaid/tikom/internal/browser"
 	"github.com/dimasfaid/tikom/internal/config"
 	"github.com/dimasfaid/tikom/internal/notify"
 	"github.com/dimasfaid/tikom/internal/poll"
 	"github.com/dimasfaid/tikom/internal/postgres"
+	"github.com/dimasfaid/tikom/internal/recap"
 	"github.com/joho/godotenv"
 )
 
@@ -112,6 +113,17 @@ func run(log *slog.Logger) error {
 		log.Info("telegram bot starting (long-poll)")
 		bot.Start()
 	}()
+
+	if cfg.Recap != nil {
+		recapper := recap.New(buildEvents(cfg), evStore, bot, poll.SystemClock{},
+			cfg.Recap.Location(), cfg.Recap.AtMinutes(), log)
+		go func() {
+			if err := recapper.Run(ctx); err != nil {
+				log.Error("recap stopped", "err", err)
+			}
+		}()
+		log.Info("daily recap scheduled", "timezone", cfg.Recap.Timezone, "at", cfg.Recap.At)
+	}
 
 	log.Info("watcher running", "events", len(cfg.Events), "config", cfgPath)
 	runErr := poller.Run(ctx)

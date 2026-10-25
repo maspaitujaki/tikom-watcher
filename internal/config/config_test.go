@@ -106,6 +106,69 @@ func TestActiveHours(t *testing.T) {
 	}
 }
 
+func TestRecap_Example(t *testing.T) {
+	c, err := Load("../../config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Recap == nil {
+		t.Fatal("example config should enable the recap")
+	}
+	if c.Recap.AtMinutes() != 21*60 {
+		t.Errorf("at = %d min; want 21:00", c.Recap.AtMinutes())
+	}
+	if _, off := time.Date(2026, 10, 25, 0, 0, 0, 0, c.Recap.Location()).Zone(); off != 7*3600 {
+		t.Errorf("recap zone offset = %ds; want +7h", off)
+	}
+}
+
+func TestRecap_Parse(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      RecapConfig
+		wantErr bool
+		wantMin int
+		wantTZ  string
+	}{
+		{"defaults", RecapConfig{}, false, 21 * 60, "Asia/Jakarta"},
+		{"custom", RecapConfig{Timezone: "UTC", At: "07:30"}, false, 7*60 + 30, "UTC"},
+		{"bad timezone", RecapConfig{Timezone: "Mars/Olympus", At: "21:00"}, true, 0, ""},
+		{"bad at", RecapConfig{At: "9pm"}, true, 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.in
+			err := r.parse()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parse err = %v; wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if r.AtMinutes() != tc.wantMin || r.Location().String() != tc.wantTZ {
+				t.Errorf("got %d min in %s; want %d min in %s", r.AtMinutes(), r.Location(), tc.wantMin, tc.wantTZ)
+			}
+		})
+	}
+}
+
+func TestValidate_RecapBlockIsOptionalButChecked(t *testing.T) {
+	base := Config{
+		DetectionDefaults: rulesWithSelector(),
+		Events:            []Event{{Key: "a", URL: "u"}},
+	}
+
+	if err := base.validate(); err != nil {
+		t.Fatalf("no recap block must be valid (disabled): %v", err)
+	}
+
+	bad := base
+	bad.Recap = &RecapConfig{At: "nope"}
+	if err := bad.validate(); err == nil {
+		t.Fatal("bad recap.at must fail validation")
+	}
+}
+
 func rulesWithSelector() (r detect.Rules) {
 	r.PageReadySelector = "x"
 	return

@@ -51,6 +51,8 @@ type EventState struct {
 	LastNotifiedAt        *time.Time // AVAILABLE (drop) alert cooldown timestamp
 	LastSoldOutNotifiedAt *time.Time // SOLD_OUT alert cooldown timestamp
 	LastCheckedAt         *time.Time
+	ChecksSinceRecap      int // checks recorded since the last daily recap (health summary)
+	UnknownSinceRecap     int // of those, how many came back UNKNOWN
 }
 
 // NotifyKind identifies which transition direction an alert is for; each has its
