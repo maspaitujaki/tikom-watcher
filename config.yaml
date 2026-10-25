@@ -3,8 +3,8 @@
 # for the fully-commented reference.
 
 poll:
-  interval: 15s
-  jitter: 5s
+  interval: 30s
+  jitter: 10s
   repeat_interval: 5s
   repeat_duration: 30s
   cooldown_minutes: 1
