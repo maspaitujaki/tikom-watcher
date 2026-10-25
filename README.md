@@ -28,9 +28,9 @@ with the observation time:
 
 With:
 
-- **Confirm-before-alert (drops only)** — on a drop, re-check once after
-  `confirm_delay`; the re-check is authoritative, filtering single-render glitches
-  without delaying real drops. The sold-out direction alerts immediately.
+- **Repeated drop alert** — a drop alerts immediately, then re-sends every
+  `repeat_interval` for `repeat_duration` (default 5s for 30s, so 6 alerts in
+  total). The sold-out direction alerts once. The sweep is blocked while repeating.
 - **Per-direction cooldown** — no re-alert of the same kind for the same event
   within `cooldown_minutes`; the drop and sold-out cooldowns are independent, so a
   sold-out alert never suppresses a following drop alert.

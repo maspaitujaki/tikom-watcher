@@ -92,12 +92,16 @@ func (d *scriptedDetector) Detect(_ context.Context, _ string, _ detect.Rules) d
 func res(s detect.State) detect.Result { return detect.Result{State: s} }
 
 type fakeNotifier struct {
-	broadcasts []string
-	admin      []string
+	broadcasts  []string
+	admin       []string
+	onBroadcast func(n int) // optional hook, called with the running broadcast count
 }
 
 func (n *fakeNotifier) Broadcast(_ context.Context, t string) (int, error) {
 	n.broadcasts = append(n.broadcasts, t)
+	if n.onBroadcast != nil {
+		n.onBroadcast(len(n.broadcasts))
+	}
 	return 1, nil
 }
 func (n *fakeNotifier) SendTo(_ context.Context, _ int64, t string) error {
@@ -134,7 +138,6 @@ func newHarness(t *testing.T, set Settings) (*Poller, *fakeStore, *scriptedDetec
 
 func defaultSettings() Settings {
 	return Settings{
-		ConfirmDelay:           5 * time.Second,
 		Cooldown:               30 * time.Minute,
 		UnknownStreakThreshold: 3,
 	}
@@ -168,15 +171,16 @@ func TestCheck_NonEdgeAvailable_NoAlert(t *testing.T) {
 	}
 }
 
-func TestCheck_ConfirmedDrop_Alerts(t *testing.T) {
-	p, store, det, ntf, _ := newHarness(t, defaultSettings())
+func TestCheck_Drop_AlertsImmediately(t *testing.T) {
+	p, store, det, ntf, clk := newHarness(t, defaultSettings())
 	store.seed("e1", detect.StateSoldOut)
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable)) // first + confirm
+	start := clk.t
+	det.load(res(detect.StateAvailable)) // ONLY one result: no confirm re-check for drops
 
 	p.check(context.Background(), testEvent)
 
 	if len(ntf.broadcasts) != 1 {
-		t.Fatalf("confirmed drop must alert once; got %d", len(ntf.broadcasts))
+		t.Fatalf("drop must alert once; got %d", len(ntf.broadcasts))
 	}
 	if !strings.Contains(ntf.broadcasts[0], testEvent.URL) {
 		t.Errorf("alert should contain URL; got %q", ntf.broadcasts[0])
@@ -188,24 +192,74 @@ func TestCheck_ConfirmedDrop_Alerts(t *testing.T) {
 	if store.st["e1"].LastNotifiedAt == nil {
 		t.Error("last_notified_at should be set after alert")
 	}
+	if store.st["e1"].LastState != detect.StateAvailable {
+		t.Fatalf("state = %s; want AVAILABLE", store.st["e1"].LastState)
+	}
+	if len(det.q) != 0 {
+		t.Errorf("drop path must not re-check; %d detect calls left unconsumed", len(det.q))
+	}
+	if !clk.t.Equal(start) {
+		t.Errorf("drop path must not wait before alerting; clock advanced %v", clk.t.Sub(start))
+	}
 }
 
-func TestCheck_GlitchDrop_NoAlert_StaysSoldOut(t *testing.T) {
-	p, store, det, ntf, _ := newHarness(t, defaultSettings())
+func TestCheck_Drop_RepeatsAlertForConfiguredDuration(t *testing.T) {
+	set := defaultSettings()
+	set.RepeatInterval = 5 * time.Second
+	set.RepeatDuration = 30 * time.Second
+	p, store, det, ntf, clk := newHarness(t, set)
 	store.seed("e1", detect.StateSoldOut)
-	// First read AVAILABLE (single-render glitch), confirm reads SOLD_OUT.
-	det.load(res(detect.StateAvailable), res(detect.StateSoldOut))
+	start := clk.t
+	det.load(res(detect.StateAvailable))
 
 	p.check(context.Background(), testEvent)
 
-	if len(ntf.broadcasts) != 0 {
-		t.Fatalf("glitch must not alert; got %d", len(ntf.broadcasts))
+	// t=0 plus one every 5s up to (not including) t=30s.
+	if got := countContains(ntf.broadcasts, "available again"); got != 6 {
+		t.Fatalf("want 6 drop alerts over 30s at 5s spacing; got %d", got)
 	}
-	if store.st["e1"].LastState != detect.StateSoldOut {
-		t.Fatalf("state = %s; want SOLD_OUT (confirm authoritative)", store.st["e1"].LastState)
+	if elapsed := clk.t.Sub(start); elapsed != 30*time.Second {
+		t.Errorf("repeat window = %v; want 30s", elapsed)
 	}
-	if len(store.transitions) != 0 {
-		t.Fatalf("no transition expected; got %v", store.transitions)
+	// The cooldown clock starts at the first alert, not the last repeat.
+	if got := store.st["e1"].LastNotifiedAt; got == nil || !got.Equal(start) {
+		t.Errorf("last_notified_at = %v; want first alert time %v", got, start)
+	}
+}
+
+func TestCheck_Drop_RepeatStopsWhenContextCancelled(t *testing.T) {
+	set := defaultSettings()
+	set.RepeatInterval = 5 * time.Second
+	set.RepeatDuration = 30 * time.Second
+	p, store, det, ntf, _ := newHarness(t, set)
+	store.seed("e1", detect.StateSoldOut)
+	det.load(res(detect.StateAvailable))
+	ctx, cancel := context.WithCancel(context.Background())
+	ntf.onBroadcast = func(n int) {
+		if n == 2 {
+			cancel()
+		}
+	}
+
+	p.check(ctx, testEvent)
+
+	if len(ntf.broadcasts) != 2 {
+		t.Fatalf("repeat must stop once ctx is cancelled; got %d alerts", len(ntf.broadcasts))
+	}
+}
+
+func TestCheck_SoldOut_DoesNotRepeat(t *testing.T) {
+	set := defaultSettings()
+	set.RepeatInterval = 5 * time.Second
+	set.RepeatDuration = 30 * time.Second
+	p, store, det, ntf, _ := newHarness(t, set)
+	store.seed("e1", detect.StateAvailable)
+	det.load(res(detect.StateSoldOut))
+
+	p.check(context.Background(), testEvent)
+
+	if len(ntf.broadcasts) != 1 {
+		t.Fatalf("sold-out alert must not repeat; got %d", len(ntf.broadcasts))
 	}
 }
 
@@ -217,8 +271,8 @@ func TestCheck_CooldownSuppressesReAlert(t *testing.T) {
 	// Count drop alerts specifically (flap steps below also emit sold-out alerts).
 	dropAlerts := func() int { return countContains(ntf.broadcasts, "available again") }
 
-	// A: confirmed drop -> drop alert #1
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	// A: drop -> drop alert #1
+	det.load(res(detect.StateAvailable))
 	p.check(ctx, testEvent)
 	if dropAlerts() != 1 {
 		t.Fatalf("want 1 drop alert; got %d", dropAlerts())
@@ -230,7 +284,7 @@ func TestCheck_CooldownSuppressesReAlert(t *testing.T) {
 
 	// C: drops again only 10 min later -> within 30m drop cooldown -> suppressed
 	clk.t = clk.t.Add(10 * time.Minute)
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	det.load(res(detect.StateAvailable))
 	p.check(ctx, testEvent)
 	if dropAlerts() != 1 {
 		t.Fatalf("re-drop within cooldown must be suppressed; got %d drop alerts", dropAlerts())
@@ -240,7 +294,7 @@ func TestCheck_CooldownSuppressesReAlert(t *testing.T) {
 	clk.t = clk.t.Add(31 * time.Minute)
 	det.load(res(detect.StateSoldOut))
 	p.check(ctx, testEvent)
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	det.load(res(detect.StateAvailable))
 	p.check(ctx, testEvent)
 	if dropAlerts() != 2 {
 		t.Fatalf("want 2 drop alerts after cooldown elapsed; got %d", dropAlerts())
@@ -309,7 +363,7 @@ func TestCheck_UnknownStreak_NoAdmin_NoWarnNoPanic(t *testing.T) {
 func TestCheck_AvailableToSoldOut_AlertsImmediately(t *testing.T) {
 	p, store, det, ntf, _ := newHarness(t, defaultSettings())
 	store.seed("e1", detect.StateAvailable)
-	det.load(res(detect.StateSoldOut)) // ONLY one result: no confirm re-check for sold-out
+	det.load(res(detect.StateSoldOut)) // ONLY one result: no re-check for sold-out
 
 	p.check(context.Background(), testEvent)
 
@@ -328,7 +382,7 @@ func TestCheck_AvailableToSoldOut_AlertsImmediately(t *testing.T) {
 	if store.st["e1"].LastState != detect.StateSoldOut {
 		t.Fatalf("state = %s; want SOLD_OUT", store.st["e1"].LastState)
 	}
-	// No confirm re-check means the detector queue had exactly one item consumed.
+	// The detector queue had exactly one item consumed.
 	if len(det.q) != 0 {
 		t.Errorf("sold-out path must not re-check; %d detect calls left unconsumed", len(det.q))
 	}
@@ -338,9 +392,9 @@ func TestCheck_SoldOutCooldownIndependentOfDrop(t *testing.T) {
 	ctx := context.Background()
 	p, store, det, ntf, _ := newHarness(t, defaultSettings())
 
-	// A confirmed drop sets the AVAILABLE (drop) cooldown timestamp.
+	// A drop sets the AVAILABLE (drop) cooldown timestamp.
 	store.seed("e1", detect.StateSoldOut)
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	det.load(res(detect.StateAvailable))
 	p.check(ctx, testEvent)
 	if len(ntf.broadcasts) != 1 {
 		t.Fatalf("want 1 drop alert; got %d", len(ntf.broadcasts))
@@ -368,7 +422,7 @@ func TestCheck_SoldOutCooldownSuppressesRepeat(t *testing.T) {
 	}
 
 	// Flap back to AVAILABLE (a drop alert), then sold out again within cooldown.
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	det.load(res(detect.StateAvailable))
 	p.check(ctx, testEvent)
 	clk.t = clk.t.Add(5 * time.Minute) // still < 30m sold-out cooldown
 	det.load(res(detect.StateSoldOut))

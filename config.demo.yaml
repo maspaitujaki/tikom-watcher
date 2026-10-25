@@ -4,7 +4,8 @@
 poll:
   interval: 10s
   jitter: 2s
-  confirm_delay: 2s
+  repeat_interval: 2s
+  repeat_duration: 10s
   cooldown_minutes: 1
   unknown_streak_threshold: 3
 

@@ -194,7 +194,7 @@ func TestPoller_EndToEnd_Postgres(t *testing.T) {
 	ntf := &captureNtf{}
 	clk := &advClock{t: time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)}
 	set := poll.Settings{
-		ConfirmDelay: time.Second, Cooldown: 30 * time.Minute,
+		Cooldown:               30 * time.Minute,
 		UnknownStreakThreshold: 2, AdminChatID: 7,
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -211,11 +211,11 @@ func TestPoller_EndToEnd_Postgres(t *testing.T) {
 		t.Fatalf("baseline must not alert; got %d", ntf.broadcasts)
 	}
 
-	// Sweep 2: confirmed drop -> alert.
-	det.load(res(detect.StateAvailable), res(detect.StateAvailable))
+	// Sweep 2: drop -> alert.
+	det.load(res(detect.StateAvailable))
 	p.Sweep(ctx)
 	if ntf.broadcasts != 1 {
-		t.Fatalf("confirmed drop must alert once; got %d", ntf.broadcasts)
+		t.Fatalf("drop must alert once; got %d", ntf.broadcasts)
 	}
 
 	st, _ := es.Get(ctx, ev.Key)
@@ -232,7 +232,7 @@ func TestPoller_EndToEnd_Postgres(t *testing.T) {
 		t.Fatalf("transitions = %d; want 2 (UNKNOWN->SOLD_OUT, SOLD_OUT->AVAILABLE)", n)
 	}
 
-	// Sweep 3: AVAILABLE -> SOLD_OUT alerts immediately (no confirm), and uses the
+	// Sweep 3: AVAILABLE -> SOLD_OUT alerts immediately, and uses the
 	// separate sold-out cooldown column (not suppressed by the recent drop alert).
 	det.load(res(detect.StateSoldOut))
 	p.Sweep(ctx)

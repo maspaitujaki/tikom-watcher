@@ -134,13 +134,13 @@ per-event detection override onto `detection_defaults`.
 1. `EventStore.Get` loads the stored state.
 2. `Detector.Detect` → `detect.Detect` → `browser.Render` fetches rendered HTML →
    `detect.Classify` returns `AVAILABLE` / `SOLD_OUT` / `UNKNOWN`.
-3. On a `SOLD_OUT → AVAILABLE` flip, **confirm-before-alert**: wait
-   `confirm_delay`, detect once more; the re-check is authoritative. The
-   `AVAILABLE → SOLD_OUT` direction alerts immediately (no confirm).
+3. On a `SOLD_OUT → AVAILABLE` flip the alert fires immediately (no re-check),
+   then repeats every `repeat_interval` for `repeat_duration`. The
+   `AVAILABLE → SOLD_OUT` direction alerts once.
 4. `EventStore.Record` persists the state, streak, and (on change) a transition row.
 5. If the streak crosses `unknown_streak_threshold`, DM the admin a warning
    (`Notifier.SendTo`, requires `ADMIN_CHAT_ID`).
-6. On a confirmed drop or a sold-out transition (each subject to its own
+6. On a drop or a sold-out transition (each subject to its own
    cooldown), `Notifier.Broadcast` DMs all active subscribers and
    `MarkNotified(kind)` records the per-direction timestamp.
 
@@ -169,7 +169,7 @@ each event's `last_state` and `last_checked_at`.
 Two-way split, enforced deliberately:
 
 - **`config.yaml`** (committed, no secrets) — poll timing (`interval`, `jitter`,
-  `confirm_delay`, `cooldown_minutes`, `unknown_streak_threshold`), optional
+  `repeat_interval`, `repeat_duration`, `cooldown_minutes`, `unknown_streak_threshold`), optional
   `active_hours` (timezone window), `browser` (timeout, user agent),
   `detection_defaults`, and the `events` list (`key`, `name`, `url`, optional
   per-event `detection` override). `config.example.yaml` is the annotated
@@ -228,9 +228,10 @@ Tests live beside the code as `_test.go` files. Run everything with `go test
   `SOLD_OUT → AVAILABLE` and `AVAILABLE → SOLD_OUT` only. If the page goes
   `SOLD_OUT → UNKNOWN → AVAILABLE` (e.g. a blocked period), no drop alert fires —
   this is intentional and mitigated by the unknown-streak warning.
-- **Confirm-before-alert is asymmetric.** Only drops are re-checked; sold-out
-  fires on first detection. A glitchy "sold out" read can thus produce a false
-  sold-out alert (then a drop alert next cycle).
+- **No confirm-before-alert.** Both directions fire on first detection, so a
+  single-render glitch can produce a false alert. Drop alerts repeat for
+  `repeat_duration`, which blocks the sweep (other events wait) and is not
+  cancelled if the page flips back to sold out mid-repeat.
 - **Event identity is `event_key`, not the URL.** Changing an event's `url`/slug in
   config keeps its history. `EnsureEvents` uses `ON CONFLICT (event_key) DO NOTHING`.
 - **`cmd/spike` and `cmd/bot` are dev tools**, not part of the running service;

@@ -39,7 +39,7 @@ export CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CONFIG_PATH=config.demo.yaml go run ./cmd/watcher
 ```
 `config.demo.yaml` watches `http://localhost:8099/to-do/mock-bts-day1` with a
-10s interval / 2s confirm / 1-minute cooldown. You'll see logs like
+10s interval / alert repeated every 2s for 10s / 1-minute cooldown. You'll see logs like
 `checked event=mock-bts-day1 state=SOLD_OUT` once the baseline is recorded.
 
 ## 4. Subscribe (Telegram)
@@ -52,7 +52,6 @@ On the admin panel click **“→ AVAILABLE”** for `mock-bts-day1` (or:
 
 Within ~10s the watcher logs:
 ```
-confirm-before-alert event=mock-bts-day1 first=AVAILABLE confirm=AVAILABLE
 ALERT sent: tickets available event=mock-bts-day1 subscribers=1
 ```
 and you receive the DM:
@@ -64,12 +63,12 @@ and you receive the DM:
 Flip back to **SOLD_OUT**, wait past the 1-minute cooldown, flip to AVAILABLE
 again to see another alert. Flipping AVAILABLE→AVAILABLE does nothing (no edge);
 re-alerting within the cooldown is suppressed (logged as
-`drop confirmed but within cooldown`).
+`transition detected but within cooldown`).
 
 ## What this proves
 - Headless render of a tiket-like page → eager detection (incl. ignoring the
   `<span>"Terjual habis"</span>` category badge that's present even when available).
-- The edge-triggered `SOLD_OUT → AVAILABLE` transition with confirm-before-alert.
+- The edge-triggered `SOLD_OUT → AVAILABLE` transition, with the alert repeated for a short window.
 - The Telegram bot delivering the DM to a real subscriber.
 
 ## Cleanup

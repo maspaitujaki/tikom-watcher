@@ -8,10 +8,9 @@
 //
 // State machine per event, each cycle:
 //   - detect -> observed state
-//   - SOLD_OUT -> AVAILABLE (a drop): CONFIRM-BEFORE-ALERT — wait ConfirmDelay,
-//     detect once more; the re-check is authoritative for both persistence and
-//     alerting (filters single-render glitches without delay).
-//   - AVAILABLE -> SOLD_OUT: alert immediately (no confirm).
+//   - SOLD_OUT -> AVAILABLE (a drop): alert immediately, then repeat the alert
+//     every RepeatInterval for RepeatDuration so it is hard to miss.
+//   - AVAILABLE -> SOLD_OUT: alert immediately (single alert, no repeat).
 //   - persist via EventStore.Record (updates last_*; appends a transition only
 //     on an actual change; bumps unknown_streak on UNKNOWN, resets on known).
 //   - alert active subscribers unless within that direction's cooldown
@@ -102,7 +101,7 @@ type Notifier interface {
 	SendTo(ctx context.Context, chatID int64, text string) error
 }
 
-// Clock abstracts time so cooldown/confirm-delay are deterministic in tests.
+// Clock abstracts time so cooldown/repeat spacing are deterministic in tests.
 type Clock interface {
 	Now() time.Time
 	Sleep(ctx context.Context, d time.Duration) error
@@ -133,8 +132,9 @@ type ActiveWindow interface {
 type Settings struct {
 	Interval               time.Duration
 	Jitter                 time.Duration
-	ConfirmDelay           time.Duration
 	Cooldown               time.Duration
+	RepeatInterval         time.Duration // spacing between repeated drop alerts; 0 disables repeating
+	RepeatDuration         time.Duration // how long drop alerts keep repeating after the first
 	UnknownStreakThreshold int
 	AdminChatID            int64        // 0 disables admin warnings
 	ActiveHours            ActiveWindow // nil => always active
@@ -214,51 +214,38 @@ func (p *Poller) check(ctx context.Context, e Event) {
 
 	res := p.detector.Detect(ctx, e.URL, e.Rules)
 	observed := res.State
-	authoritative := observed
 	isDrop := prev.LastState == detect.StateSoldOut && observed == detect.StateAvailable
 	isSoldOut := prev.LastState == detect.StateAvailable && observed == detect.StateSoldOut
 
-	if isDrop {
-		// CONFIRM-BEFORE-ALERT (drops only): re-check once; the re-check is
-		// authoritative. The sold-out direction alerts immediately (no confirm).
-		if err := p.clock.Sleep(ctx, p.set.ConfirmDelay); err != nil {
-			return // ctx cancelled
-		}
-		confirm := p.detector.Detect(ctx, e.URL, e.Rules)
-		authoritative = confirm.State
-		p.log.Info("confirm-before-alert", "event", e.Key,
-			"first", observed, "confirm", authoritative)
-	}
-
 	now := p.clock.Now()
-	_, outcome, err := p.store.Record(ctx, e.Key, authoritative, now)
+	_, outcome, err := p.store.Record(ctx, e.Key, observed, now)
 	if err != nil {
 		p.log.Error("record state failed", "event", e.Key, "err", err)
 		return
 	}
-	p.log.Info("checked", "event", e.Key, "state", authoritative,
+	p.log.Info("checked", "event", e.Key, "state", observed,
 		"changed", outcome.Changed, "unknown_streak", outcome.NewStreak, "reason", res.Reason)
 
 	// Admin warning when the streak crosses the threshold (once, on crossing).
-	if authoritative == detect.StateUnknown && p.set.UnknownStreakThreshold > 0 &&
+	if observed == detect.StateUnknown && p.set.UnknownStreakThreshold > 0 &&
 		outcome.OldStreak < p.set.UnknownStreakThreshold &&
 		outcome.NewStreak >= p.set.UnknownStreakThreshold {
 		p.warnAdmin(ctx, e, outcome.NewStreak)
 	}
 
 	switch {
-	case isDrop && authoritative == detect.StateAvailable:
-		// Confirmed SOLD_OUT -> AVAILABLE.
+	case isDrop:
+		// SOLD_OUT -> AVAILABLE.
 		p.alert(ctx, e, NotifyAvailable, prev.LastNotifiedAt, now)
 	case isSoldOut:
-		// AVAILABLE -> SOLD_OUT (immediate; authoritative == observed == SOLD_OUT).
+		// AVAILABLE -> SOLD_OUT.
 		p.alert(ctx, e, NotifySoldOut, prev.LastSoldOutNotifiedAt, now)
 	}
 }
 
 func (p *Poller) alert(ctx context.Context, e Event, kind NotifyKind, lastNotified *time.Time, now time.Time) {
 	if withinCooldown(lastNotified, now, p.set.Cooldown) {
-		p.log.Info("transition confirmed but within cooldown; not re-alerting",
+		p.log.Info("transition detected but within cooldown; not re-alerting",
 			"event", e.Key, "kind", kind, "cooldown", p.set.Cooldown)
 		return
 	}
@@ -276,6 +263,34 @@ func (p *Poller) alert(ctx context.Context, e Event, kind NotifyKind, lastNotifi
 		p.log.Error("mark notified failed", "event", e.Key, "err", err)
 	}
 	p.log.Info(logMsg, "event", e.Key, "subscribers", sent)
+
+	if kind == NotifyAvailable {
+		p.repeatAvailable(ctx, e)
+	}
+}
+
+// repeatAvailable re-sends the drop alert every RepeatInterval until
+// RepeatDuration has elapsed. It blocks the sweep (as the old confirm delay did),
+// so other events wait; the cooldown timestamp was already set by the first alert.
+func (p *Poller) repeatAvailable(ctx context.Context, e Event) {
+	if p.set.RepeatInterval <= 0 || p.set.RepeatDuration <= 0 {
+		return
+	}
+	deadline := p.clock.Now().Add(p.set.RepeatDuration)
+	for {
+		if err := p.clock.Sleep(ctx, p.set.RepeatInterval); err != nil {
+			return // ctx cancelled
+		}
+		now := p.clock.Now()
+		if !now.Before(deadline) {
+			return
+		}
+		sent, err := p.notifier.Broadcast(ctx, availableMessage(e, now))
+		if err != nil {
+			p.log.Error("repeat broadcast partially/fully failed", "event", e.Key, "err", err)
+		}
+		p.log.Info("ALERT repeated: tickets available", "event", e.Key, "subscribers", sent)
+	}
 }
 
 func (p *Poller) warnAdmin(ctx context.Context, e Event, streak int) {

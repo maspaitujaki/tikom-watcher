@@ -176,8 +176,9 @@ func buildSettings(cfg *config.Config, adminChatID int64) poll.Settings {
 	return poll.Settings{
 		Interval:               cfg.Poll.Interval.D(),
 		Jitter:                 cfg.Poll.Jitter.D(),
-		ConfirmDelay:           cfg.Poll.ConfirmDelay.D(),
 		Cooldown:               cfg.Cooldown(),
+		RepeatInterval:         cfg.Poll.RepeatInterval.D(),
+		RepeatDuration:         cfg.Poll.RepeatDuration.D(),
 		UnknownStreakThreshold: cfg.Poll.UnknownStreakThreshold,
 		AdminChatID:            adminChatID,
 		ActiveHours:            aw,

@@ -15,6 +15,9 @@ func TestLoad_Example(t *testing.T) {
 	if c.Poll.Interval.D() != 60*time.Second {
 		t.Errorf("interval = %v; want 60s", c.Poll.Interval.D())
 	}
+	if c.Poll.RepeatInterval.D() != 5*time.Second || c.Poll.RepeatDuration.D() != 30*time.Second {
+		t.Errorf("repeat = %v for %v; want 5s for 30s", c.Poll.RepeatInterval.D(), c.Poll.RepeatDuration.D())
+	}
 	if c.Cooldown() != 30*time.Minute {
 		t.Errorf("cooldown = %v; want 30m", c.Cooldown())
 	}

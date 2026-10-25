@@ -49,7 +49,8 @@ type Config struct {
 type PollConfig struct {
 	Interval               Duration `yaml:"interval"`
 	Jitter                 Duration `yaml:"jitter"`
-	ConfirmDelay           Duration `yaml:"confirm_delay"`
+	RepeatInterval         Duration `yaml:"repeat_interval"`
+	RepeatDuration         Duration `yaml:"repeat_duration"`
 	CooldownMinutes        int      `yaml:"cooldown_minutes"`
 	UnknownStreakThreshold int      `yaml:"unknown_streak_threshold"`
 }
@@ -103,8 +104,11 @@ func (c *Config) applyDefaults() {
 	if c.Poll.Jitter < 0 {
 		c.Poll.Jitter = 0
 	}
-	if c.Poll.ConfirmDelay <= 0 {
-		c.Poll.ConfirmDelay = Duration(5 * time.Second)
+	if c.Poll.RepeatInterval <= 0 {
+		c.Poll.RepeatInterval = Duration(5 * time.Second)
+	}
+	if c.Poll.RepeatDuration <= 0 {
+		c.Poll.RepeatDuration = Duration(30 * time.Second)
 	}
 	if c.Poll.CooldownMinutes <= 0 {
 		c.Poll.CooldownMinutes = 30

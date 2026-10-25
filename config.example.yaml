@@ -4,7 +4,8 @@
 poll:
   interval: 60s              # base time between full sweeps of the event list
   jitter: 20s               # each sweep waits interval ± random(0..jitter)
-  confirm_delay: 5s         # on a SOLD_OUT->AVAILABLE flip, re-check once after this delay
+  repeat_interval: 5s       # on a SOLD_OUT->AVAILABLE flip, re-send the alert this often...
+  repeat_duration: 30s      # ...for this long after the first alert
   cooldown_minutes: 30      # do not re-alert the same event within this window
   unknown_streak_threshold: 5  # consecutive UNKNOWNs before DMing the admin a warning
 
